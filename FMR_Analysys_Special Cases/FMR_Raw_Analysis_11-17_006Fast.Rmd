@@ -1,0 +1,387 @@
+```{r}
+library(dplyr)
+library(stringr)
+library(foreach)
+library(segmented)
+library(grDevices)
+library(tidyr)
+library(zoo)
+library(tidyverse)
+library(plotly)
+library(hrbrthemes)
+library(gridExtra)
+library(ggpubr)
+```
+
+#Read in Data
+```{r}
+setwd("/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/FMR Analysis/FMR Raw Data/")
+
+load.expedata.file <- function(){
+  file <- file.choose()
+  # extract information from filename
+  filename <<- unlist(strsplit(basename(file), "[ ]"))[1]
+  filename <<- gsub(".csv", "", tail(strsplit(file, "/")[[1]], n=1))
+  phenotype <<- str_sub(filename, -4 , -1)[[1]]
+  edate    <<- strsplit(filename, "_")[[1]][1]
+  # read in data to "restfull" which will be full resting data
+  flightfull   <- read_csv(file)
+  flightfull$markers <- rawToChar(as.raw(as.character(flightfull$Marker)), multiple=T) #turn markers in ascii character codes
+  # this returns decimal fraction, uncorrected for water dilution because lags have to be fixed first
+  #restfull$CO2uc <- restfull$CO2/1000000 
+  #unique(restfull$chamber)
+  return(flightfull)
+  #write.csv(restfull, "test.csv", row.names=F)
+}
+
+flightfull <- load.expedata.file()
+flightfull <-  flightfull%>%
+  dplyr::rename("Carbon_Dioxide" = "CO2",
+         "Oxygen" = "O2")%>%
+  dplyr::select(-c("Temp__Aux1_","Temp__Aux2_", "FoxBoxTemp", "FlowSet"))#select variables of interest
+str(flightfull)
+View(flightfull)
+```
+
+#add "markers" column with capital letters
+```{r}
+#Timepoint determination
+#This code populates the blanks in markers with NA's then fills in every NA with a previous actual value entry,
+#effectively making each row fall into a timepoint position based on the markers column
+
+flightfull$markers[252:258]<-"f" 
+
+flightfull$markers[1]<-"K" #make first value "K" signifying the beginning
+flightfull$markers[flightfull$markers == ""] <- NA #populates blank cells with "NA"
+flightfull$markers <- na.locf(flightfull$markers) #replaces NAs with repeats of the previous letters
+flightfull$markers <- toupper(flightfull$markers) #replaces lower case letters with uppercase letters
+
+#This sorts the rows with certain letters and saves them as objects
+bsln <- which(flightfull$markers == "K") #Baseline at beginning
+chbr <- which(flightfull$markers == "S") #Indicates the switch between baseline and experimental chamber
+fly <- which(flightfull$markers == "F") #bee is flying
+rest <- which(flightfull$markers == "R") #bee is at rest
+
+#saves the first row number of each section
+bsln1 <- bsln[1] 
+chbr1 <- chbr[1]
+fly1 <- fly[1] 
+rest1 <- rest[1] 
+
+#Check the lags
+##After the visual check -- mark the appropriate numbers down below for the lag (I think it's 10 for late and 4 for early SMR's)
+##Plots Carbon_Dioxide with time stamps 20 seconds before and 20 seconds after chbr switch
+plot(flightfull$Seconds[(chbr1-20):(chbr1+20)], flightfull$Carbon_Dioxide[(chbr1-20):(chbr1+20)], main = "CO2 lag check")
+abline(v=chbr1)
+##Oxygen
+plot(flightfull$Seconds[(chbr1-20):(chbr1+20)], flightfull$Oxygen[(chbr1-20):(chbr1+20)], main = "O2 lag check")
+abline(v=chbr1)
+##Pressure
+plot(flightfull$Seconds[(chbr1-20):(chbr1+20)], flightfull$Barometric_Pressure[(chbr1-20):(chbr1+20)], main = "BP lag check")
+abline(v=chbr1)
+##Flow Rate
+plot(flightfull$Seconds[(chbr1-20):(chbr1+30)], flightfull$Flow_Rate[(chbr1-20):(chbr1+30)], main = "FR lag check")
+abline(v=chbr1)
+```
+
+
+#creates a new column with "shifted" or lag-corrected readings to match the actual time pointwhen the switch took
+```{r}
+#I think Stephen may have pressed his key stroke and THEN switched the plumbing. This is the opposite of what we did. 
+##Manually change these numbers to fit the lag time
+lagco2 <- 2
+lago2 <-  2
+lagpres <- 2
+lagflow <- 2
+##I think it just shifts all row values by 8
+###"nolag" means that the columns displays the values as if the lag never happened. 
+####Carbon Dioxide
+flightfull$Carbon_Dioxide_nolag <- c(flightfull$Carbon_Dioxide[(1+lagco2):length(flightfull$Carbon_Dioxide)], rep(NA, lagco2))
+####Oxygen
+flightfull$Oxygen_nolag <- c(flightfull$Oxygen[(1+lago2):length(flightfull$Oxygen)], rep(NA, lago2))
+####Flow Rate
+flightfull$Flow_Rate_nolag <- c(flightfull$Flow_Rate[(1+lagflow):length(flightfull$Flow_Rate)], rep(NA, lagflow))
+####Pressure
+flightfull$Pressure_nolag <- c(flightfull$Barometric_Pressure[(1+lagpres):length(flightfull$Barometric_Pressure)], rep(NA, lagpres))
+```
+
+#Visualize all the data
+```{r}
+#plot full data lag corrected
+plot(flightfull$Seconds, flightfull$Carbon_Dioxide_nolag, type="l", col="darkorange", axes=F, ann=F)
+par(new=T)
+plot(flightfull$Seconds, flightfull$Oxygen_nolag, type="l", col="green", axes=F, ann=F)
+par(new=T)
+legend(x="topright", legend=c("CO2", "O2"), col=c("darkorange","green"), bty = "n", lty=1, cex=.75)
+par(new=T)
+plot(flightfull$Seconds, flightfull$Flow_Rate_nolag , type="l", axes=T, ann=F)
+abline(v=chbr1-lagco2, col = "black")
+abline(v=chbr1+120, col="red") #Why plot this red line???
+```
+
+#Stable Baseline determination for zero correct
+```{r}
+#This gets the most stable 30 seconds for the baseline calculation
+allVarBase <- data.frame(startTime=integer(0), varValBase=numeric(0))
+for(x in bsln1:(chbr1-3)){ #x from first baseline point (bsln1) to 3 seconds before the chamber switch (chbr1)
+  varNowBase <- var(flightfull$Carbon_Dioxide_nolag[x:(x+30)], na.rm = T) #variance
+  newRowBase <- c(x, varNowBase)
+  allVarBase <- rbind(allVarBase, newRowBase) #creates dataframe with  two rows: startTime = x (in for loop); varValBase = variance 
+}
+names(allVarBase)=c("startTime", "varValBase")
+#now to find minumum variance point using the above time frame in the for loop (2 minutes) 
+minVarBase <- min(allVarBase$varValBase)
+
+#Get the estimates 
+begin.base <- allVarBase$startTime[which(allVarBase$varValBase==min(allVarBase$varValBase))] # gives the row at which the var val base is the smallest
+duration.base <- 30 # most stable 30 seconds
+lowVar.baseline <- begin.base:(begin.base+duration.base) #gives a string of numbers starting at the point "begin.base" and ending 30 rows after that point
+#CO2
+prelowvar_CO2 <- mean(flightfull$Carbon_Dioxide[lowVar.baseline], na.rm=T) #selects the mean of all the rows in which CO2 measurements match the lowVar.baseline string 
+FiCO2 <- prelowvar_CO2 #mean
+#O2
+prelowvar_O2 <- mean(flightfull$Oxygen[lowVar.baseline], na.rm = T) #same as CO2
+FiO2 <- prelowvar_O2 #mean
+
+#Drift Correction
+  #This is subtracting the average %C of the baseline (lowest %C variance from 30 s) from every point during the sample
+driftcorrectO2 <- prelowvar_O2 - flightfull$Oxygen_nolag # subtracting out baseline ("zeroing") **"driftcorrectO2" never appears again in the script
+
+flightfull<- flightfull%>%
+  mutate(Carbon_Dioxide_pct = Carbon_Dioxide_nolag - FiCO2, #subtract the mean CO2 baseline from the CO2 readings from the foxbox
+         Oxygen_pct = FiO2 - Oxygen_nolag) #gives the oxygen CONSUMED
+# units still %CO2
+# units still %O2
+
+# PLOT the drift correction in base R
+plot(flightfull$Seconds, flightfull$Carbon_Dioxide_pct, type="l", ylab= "CO2 lag and drift corrected", xlab="Seconds", main=c(filename, " CO2 trace"))
+par(new=T)
+plot(flightfull$Seconds, flightfull$Oxygen_pct, type = "l", col= "red", ylab = "O2 lag and drift corrected", xlab = "Seconds", main=c(filename, " O2 trace"))
+```
+
+#Visualize only points where the bee is flying
+```{r}
+plot(flightfull$Seconds, flightfull$Carbon_Dioxide_pct, type="l")
+abline(v=fly1) #Veritcal line indicates the first flight
+plot(flightfull$Seconds[fly], flightfull$Carbon_Dioxide_pct[fly])
+abline(v=fly1)
+
+##Plots with fly and nofly points
+flightfull <- flightfull%>%
+  mutate(Behavior = ifelse(markers == "F", "fly", "nofly"))
+#CO2
+p1 <- flightfull%>%
+  ggplot( aes(x=Seconds, y=Carbon_Dioxide_pct)) +
+    geom_area(fill="#69b3a2", alpha=0.5) +
+    geom_point(aes(color=Behavior), size = .1) +
+    ylab("Percent CO2 Consumed") +
+    theme_ipsum()
+p2 <- ggplotly(p1)
+p2
+
+#O2
+p3 <- flightfull%>%
+  ggplot( aes(x=Seconds, y=Oxygen_pct)) +
+    geom_area(fill="#69b3a2", alpha=0.5) +
+    geom_point(aes(color=Behavior), size = .1) +
+    ylab("Percent O2 Consumed") +
+    theme_ipsum()
+p4 <- ggplotly(p3)
+p4
+
+ggarrange(p1 , p3,  ncol = 1, nrow = 2)
+```
+
+#Add VCO2 to data frame and calculate output values
+```{r}
+# Get VCO2 by multiplying by the flow rate (in ml/min)
+flightfull<-flightfull%>%
+  dplyr::mutate(VCO2 = flightfull$Carbon_Dioxide_pct / 100 * flightfull$Flow_Rate_nolag * 60)# mLCO2/hr **on 10/25/18 SM discovered the mistake that multiplying by a percent is stupid, and you need to divide out 100 ... Now (7/8/19) fixed here** Then multiply by flow rate and then by 60
+# units are NOW :: ml CO2 / hr and are fully corrected 
+# essentially equation 10.3 from Lighton 2008 book
+flightfull<-flightfull%>%
+  dplyr::mutate(VO2 = flightfull$Oxygen_pct / 100 * flightfull$Flow_Rate_nolag * 60) # mL O2 / hr ### may be wrong w/o H2O correction ?? (10/30/19 SM)
+
+flightfull.sub<-flightfull%>%
+  filter(Seconds > chbr1+120 & Seconds < chbr1+(60*25)) # make "usetime" 2 min to 10 min
+
+#Base R plot for CO2
+plot(flightfull$Seconds[fly], flightfull$VCO2[fly], main = "VCO2", type="l", xlab = "Seconds flight", ylab = "VCO2 flight") #subsets "just flight" points
+
+#GGplot for CO2
+p5 <- flightfull.sub%>%
+  ggplot( aes(x=Seconds, y=VCO2)) +
+    geom_area(fill="#69b3a2", alpha=0.5) +
+    geom_point(aes(color=Behavior, alpha = Behavior), size = .1) +
+    ylab("VCO2") +
+    scale_alpha_manual(values= c(1,.1))+
+    theme_ipsum()
+p6 <- ggplotly(p5)
+p6
+
+##IDK if I need this
+#flightfull$RQV <- flightfull$VCO2/flightfull$VO2
+#usetime <- (chbr1+120):(chbr1+(60*9)) # make "usetime" 2 min to 10 min
+#This code sets the window of selection. Original code: usetime <- (chbr1+120):(chbr1+(60*25))
+#plot(flightfull$Seconds[usetime], flightfull$VCO2[usetime], main=c(filename, "VCO2 10 minute trace"), type="l", xlab = "Seconds", ylab = "VCO2 ml/hr")
+```
+
+#create markz column to kmow when behaviors are beginning and ending
+```{r}
+# This section creates a new column telling whether the datapoint starts a new behavior, ends it, or is the same as previous. Makes column "markz"
+wholetrace <- flightfull$Seconds[1]:length(flightfull$Seconds)
+
+flightfull$markz <- "problem" #first fill all rows with "problem"
+for(x in wholetrace) {
+  ifelse (flightfull$markers[x] != flightfull$markers[x-1],
+          flightfull$markz[x] <- "new",
+  ifelse (flightfull$markers[x] != flightfull$markers[x+1],
+          flightfull$markz[x] <- "end", 
+          flightfull$markz[x] <- "same"))
+}#"!=" means "does not equal
+
+flightfull$markz[length(flightfull$Seconds)] <- "end"
+news <- which(flightfull$markz=="new")
+for(x in news) {
+  if(flightfull$markz[x+1] == "new") 
+    {flightfull$markz[x] <- "weirdo"}
+} #why weirdo? What does this function do
+flightfull$Seconds[which(flightfull$markz == "weirdo")]
+
+##Calculate summary statistics for flight time
+flightfull<-flightfull%>%
+  filter(Seconds >= chbr1+120 & Seconds <= chbr1+(60*25)) # make "usetime" 2 min to 10 min
+
+flightfull$markz[1]<-"new"
+
+# Selects all just flight. Unites in ml/hr
+justflight <- tibble(subset(flightfull, flightfull$markers == "F")) #subset all datapomnts where the bee is flying
+
+(overallflight <- c(summary(justflight$VCO2), sd=sd(justflight$VCO2, na.rm=T)))
+
+(meanflightVCO2 <- overallflight[4])
+(sdflightVCO2 <- sd(justflight$VCO2, na.rm=T))
+(maxflightVCO2 <- overallflight[6])
+```
+
+#longest continual flight
+```{r}
+# longest continuous flight subset 
+#The chunk below created "contigseconds" which tells us the beginning and end of each flight and the length in seconds
+subnewend <- subset(justflight, justflight$markz != "same") #View(subnewend) # tells all the start / ends of the behaviors
+contigseconds <-data.frame(subnewend$Seconds[which(subnewend$markz == "new")], subnewend$Seconds[which(subnewend$markz == "end")])
+names(contigseconds) <- c("new", "end")
+contigseconds$length <- contigseconds$end - contigseconds$new
+startseconds <- contigseconds$new[which(contigseconds$length == max(contigseconds$length))]
+View(contigseconds)
+
+#What does this do???
+if(length(startseconds)  > 1) {startseconds <- startseconds[1]}
+endseconds <- contigseconds$end[which(contigseconds$length == max(contigseconds$length))]
+if(length(endseconds) > 1) {endseconds <- endseconds[1]}
+
+60 < endseconds - startseconds #Make sure this is true, that the longest flight is greater than 60 seconds.
+30 < endseconds - startseconds 
+
+xlx <- ifelse((60 < endseconds - startseconds)==T, 60, (endseconds - startseconds))
+
+z <- subset(justflight, justflight$Seconds >= startseconds)
+useflight <- subset(z, z$Seconds <= endseconds) # This is longest continuous flight 
+```
+
+##Chosen Regions MR determination
+# 1. Overall contiguous  flight
+```{r}
+(overallcontig <- c(summary(useflight$VCO2), sd=sd(useflight$VCO2, na.rm=T)))
+(meancontig <- overallcontig[4])
+(sdcontig <- sd(useflight$VCO2, na.rm=T))
+(maxcontig <- overallcontig[6])
+(lengthcontig <- length(useflight$Seconds))
+#plot(useflight$VCO2 ~ useflight$Seconds, type="l")
+```
+
+# 2. Most stable 1 minute of flight in longest contiguous stretch
+```{r}
+allVar <- data.frame(startTime=integer(0), time=integer(0), varVal=numeric(0))
+for(x in 1:(length(useflight$Seconds)-xlx)) {
+  varNow <- var(useflight$VCO2[x:(x+xlx)])
+  timenow <- useflight$Seconds[x]
+  newRow <- c(x, timenow, varNow)
+  allVar <- rbind(allVar, newRow)  
+}
+names(allVar) <- c("startTime", "time", "varVal")
+#View(allVar)
+#now to find smallest variance
+minVar <- min(allVar$varVal, na.rm=T)
+
+(begin.sec <- allVar$startTime[which(allVar$varVal == minVar)])
+duration.sec <- xlx
+flightlowvar <- begin.sec:(begin.sec+duration.sec)
+(MRlowvar <- c(summary(useflight$VCO2[begin.sec:(begin.sec+duration.sec)]), sd = sd(useflight$VCO2[begin.sec:(begin.sec+duration.sec)]), start=allVar$time[which(allVar$varVal == minVar)]))
+
+(meanstable1min <- MRlowvar[4])
+(sdstable1min <- sd(useflight$VCO2[begin.sec:(begin.sec+duration.sec)]))
+(maxstable1min <- MRlowvar[6])
+```
+
+# 3. Highest mean 1 minute during contiguous flight
+```{r}
+allhighmean <- data.frame(startTime=integer(0), timenow = integer(0), meanVal=numeric(0))
+
+#This for loop computes the VCO2 mean for the next 1 minute for each timepoint 
+for(x in 1:(length(useflight$Seconds)-xlx)){
+  meanNow <- mean(useflight$VCO2[(x):(x+(xlx))], na.rm = T)
+  timenow <- useflight$Seconds[x]
+  newRow <- c(x, timenow, meanNow)
+  allhighmean <- rbind(allhighmean, newRow)  
+}
+names(allhighmean)=c("startTime", "time", "meanVal")
+#View(allhighmean)
+
+#Get the estimates
+beginsecmean <- allhighmean$startTime[which(allhighmean$meanVal == max(allhighmean$meanVal, na.rm = T))]
+durationsecmean <- xlx
+highmean.region <- beginsecmean:(beginsecmean+durationsecmean)
+(summaryhighmean <- c(summary(useflight$VCO2[highmean.region], na.rm=T), sd=sd(useflight$VCO2[highmean.region], na.rm=T), start=beginsecmean, end=beginsecmean+durationsecmean))
+(meanhighregion <- summaryhighmean[4])
+(sdhighregion <- sd(useflight$VCO2[highmean.region], na.rm=T))
+(maxhighregion<- summaryhighmean[6])
+```
+
+#4.   Highest 120 points during longest contiguous flight
+```{r}
+n <- 60
+decendingVCO2 <- sort(useflight$VCO2, decreasing = TRUE)
+high120 <- decendingVCO2[1:n]
+(regionhighest120 <- c(summary(high120), sd = sd(high120, na.rm=T)))
+(meanhighest120 <- regionhighest120[4])
+(sdhighest120 <- sd(high120, na.rm=T))
+(maxhighest120 <- regionhighest120[6])
+
+#plot(startflight$Seconds, startflight$VCO2, type="l", main = paste(filename, "(longest continuous)"))
+#par(new=T)
+#plot(startflight$Seconds[which(flightfull$markers == "F")], startflight$VCO2[which(flightfull$markers == "F")], col="blue", axes=T, ann=F)
+```
+
+```{r}
+this_MR_data <- tibble(filename, edate, phenotype,
+                   meanflightVCO2, sdflightVCO2, 
+                   meanstable1min, sdstable1min)
+
+#View(this_MR_data)
+
+FMR_master <- read.csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/FMR Analysis/FMR Raw Data/FMR_master.csv", header = T, sep=",") # Change this to the desired file name for your application
+FMR_master$filename <- as.character(FMR_master$filename)
+str(FMR_master)
+
+#Add newest processed row to previous data, overwrite the csv (then move on to the next one)
+FMR_master <- rbind(FMR_master, this_MR_data)
+write.csv(FMR_master, "/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/FMR Analysis/FMR Raw Data/FMR_master.csv", row.names=F)
+
+# check then clear the workspace for the next processing
+#ls()
+rm(list = ls())
+```
+
+
+

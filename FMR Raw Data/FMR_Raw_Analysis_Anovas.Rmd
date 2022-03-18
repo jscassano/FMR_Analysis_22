@@ -1,0 +1,96 @@
+---
+title: "Untitled"
+author: "Julian Cassano"
+date: "6/24/2021"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+FMR.master.final <- read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/FMR Analysis/FMR Raw Data/FMR_master.csv")%>%
+  drop_na()%>%
+  dplyr::rename(Phenotype = phenotype)%>%
+  mutate(Phenotype = as.factor(Phenotype),
+         FMR.Watts_1min = (meanstable1min*21.4)/3600)
+View(FMR.master.final)
+write_csv(FMR.master.final, "/Users/jcassano/Desktop/FMR.master.final.csv")
+
+sum.master <- group_by(FMR.master.final,Phenotype)%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean_VCO2 = mean(meanflightVCO2),
+    mean_stable1min = mean(FMR.Watts_1min), #Watts
+    sd_VCO2 = mean(sdflightVCO2),
+    se_mean_stable1min = sd(FMR.Watts_1min) / sqrt((length(FMR.Watts_1min))))
+    
+#Anova meanstable1min
+lm.1min <- lm(meanstable1min ~ Phenotype + edate, data = FMR.master.final)
+anova(lm.1min)
+summary(lm.1min)
+ggplot(FMR.master.final, aes(x = filename, y = meanstable1min, color = Phenotype)) +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90))
+#Anova VCO2
+lm.VCO2 <- lm(meanflightVCO2 ~ Phenotype, data = FMR.master.final)
+anova(lm.VCO2)
+plot(lm.VCO2)
+ggplot(FMR.master.final, aes(x = filename, y = meanflightVCO2, color = Phenotype)) +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90))
+
+#normality
+shapiro.test((FMR.master.final$meanflightVCO2)^2)
+
+#Tests
+test1 <- FMR.master.final%>%
+  mutate(square.meanflightVCO2 = meanflightVCO2^2,
+         sqrt.meanflightVCO2 = sqrt(meanflightVCO2),
+         log.meanflightVCO2 = log(meanflightVCO2))
+lm.test1 <- lm(log.meanflightVCO2 ~ Phenotype, data = test1 )
+anova(lm.test1)
+#outliers
+lower <- quantile(FMR.master.final$meanflightVCO2, .25) - 1.5 * IQR(FMR.master.final$meanflightVCO2)
+upper <- quantile(FMR.master.final$meanflightVCO2, .75) + 1.5 * IQR(FMR.master.final$meanflightVCO2)
+FMR.master.final.no.outlier <- FMR.master.final%>%
+  subset(meanflightVCO2 < upper)
+lm.VCO2.no.outlier <- lm(meanflightVCO2 ~ phenotype, data = FMR.master.final)
+anova(lm.VCO2)
+
+
+#Plot for **MANUSCRIPT**
+pd <- position_dodge(0.9) # move them 0.05 to the left and right
+bar.FMR <- ggplot(sum.master, aes(x=Phenotype, y=mean_stable1min, fill = Phenotype))+
+    geom_bar(stat="identity", position=position_dodge()) +
+    geom_errorbar(aes(ymin=mean_stable1min-se_mean_stable1min, 
+                      ymax=mean_stable1min+se_mean_stable1min), 
+                  position = pd, width=0.1, 
+                  colour = "black", 
+                  size=1) +
+  scale_fill_manual(values=c("firebrick", "steelblue3"))+
+  theme_pubr() +
+  labs(y ="FMR (Watts)")+
+  theme(legend.title = element_blank(),
+        plot.margin = unit(c(0,1.5,0,0),"cm"))+
+  scale_y_continuous(expand = c(0, 0),
+                    breaks = c(.01,.02,.03,.04,.05,.06,.07)) +
+  guides(fill = F)+
+  theme(legend.title = element_blank())
+bar.FMR
+
+pd <- position_dodge(0.9) # move them 0.05 to the left and right
+bar.FMR2 <- ggplot(sum.master, aes(x=Phenotype, y=mean_stable1min, fill = Phenotype))+
+    geom_bar(stat="identity", position=position_dodge()) +
+    geom_errorbar(aes(ymin=mean_stable1min-se_mean_stable1min , ymax=mean_stable1min+se_mean_stable1min), position = pd, width=0.1, colour = "black", size=1) +
+  scale_fill_manual(values=c("firebrick", "steelblue3"))+
+  theme_pubr() +
+  labs(y ="FMR (mWatts)")+
+  theme(legend.title = element_blank())
+bar.FMR2
+
+FMR <- ggarrange( bar.FMR,  bar.FMR2)
+
+ggsave(plot = FMR, filename = "/Users/jcassano/Desktop/bar.FMR.png", width = 5, height = 5, dpi = 300)
+```
+
+

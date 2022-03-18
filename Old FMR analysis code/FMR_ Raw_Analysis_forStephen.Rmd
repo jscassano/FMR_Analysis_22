@@ -1,0 +1,184 @@
+---
+title: "FMR_Raw_Analysis"
+output: html_document
+---
+
+###  Analysis of metabolic rate, somewhat taken from Michael Dillon and Abbie Reade (MDAR) scripts...
+# for analysis in R of Expedata files previously exported as .csv 
+#  
+# These are for Stephen's honeybee experiments, flying chamber bees, 350 mL chamber, with channels:
+#
+#    
+#    Seconds: seconds, starts with "0"
+#    Barometric_Pressure:  pressure (kPa)
+#    Flow_Rate: flow rate in system (mL/min)
+#    Oxygen:   Oxygen %, corrected for barometric pressure
+#    Water_vapor:   Water vapor (kPa) *******(mmol/mol so divide by 1000 to get molar fraction)
+#    Carbon_Dioxide:   CO2 %, corrected for barometric pressure
+
+```{r}
+library(dplyr)
+library(stringr)
+library(foreach)
+library(segmented)
+library(grDevices)
+library(tidyr)
+library(zoo)
+library(tidyverse)
+
+#set the working directory, here, it is reinforcing the default project directory
+setwd("C:/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/FMR Analysis/FMR Raw Data")
+
+# directory for visual checks of data - IDK what this is!
+dir.checks <- "output/checktrace"
+# directory where all corrected data is housed for further analysis
+dir.processed <- "output/processed"
+```
+
+
+
+```{r}
+# Functions to load in expedata files saves as CSV
+load.expedata.file <- function(){
+  file <- file.choose()
+  # extract information from filename
+  filename <<- unlist(strsplit(basename(file), "[ ]"))[1]
+  filename <<- gsub(".csv", "", tail(strsplit(file, "/")[[1]], n=1))
+  #edate    <<- strsplit(filename, "_")[[1]][2]
+  # read in data to "flightfull" which will be full resting data
+  flightfull   <- read.csv(file, header=T)
+  # Markers .. these are saved as Ascii codes, so here we convert them back to characters
+  flightfull$markers <- rawToChar(as.raw(as.character(flightfull$Marker)), multiple=T)
+  # this returns decimal fraction, uncorrected for water dilution because lags have to be fixed first
+  #flightfull$CO2uc <- flightfull$CO2/1000000 
+  unique(flightfull$chamber)
+  return(flightfull)
+  #write.csv(flightfull, "test.csv", row.names=F)
+}
+```
+
+```{r}
+#Use function to load CSV files
+#Choose files from directory
+flightfull <- load.expedata.file()%>%
+  rename("Carbon_Dioxide" = "CO2",
+         "Oxygen" = "O2")%>%
+  select(-c("Temp__Aux1_","Temp__Aux2_", "FoxBoxTemp", "FlowSet", "Flow_Rate"))
+str(flightfull)
+View(flightfull)
+```
+
+```{r}
+#create new marker names TO CKECK WORK
+flightfull$Markname <- ifelse(flightfull$Marker == -1, flightfull$Markname <- "none", 
+                        ifelse(flightfull$Marker == 108, flightfull$Markname <- "end", 
+                        ifelse(flightfull$Marker == 118, flightfull$Markname <- "beginbase", flightfull$Markname <- "check")))
+```
+
+```{r}
+#Timepoint determination
+#This code populates the blanks in markers with NA's then fills in every NA with a previous actual value entry,
+#effectively making each row fall into a timepoint position based on the markers column
+flightfull$markers[1]<-"K" #make first value "K" signifying the beginning
+flightfull$markers[flightfull$markers == ""] <- NA #populates blank cells with "NA"
+flightfull$markers <- na.locf(flightfull$markers) #replaces NAs with repeats of the previous letters
+flightfull$markers <- toupper(flightfull$markers) #replaces lower case letters with uppercase letters
+```
+
+```{r}
+# saves for later use
+#This sorts the rows with certain letters and saves them as objects
+seal <- which(flightfull$markers == "S") # seal, continues until 1st behavior noted 
+fly <- which(flightfull$markers == "F") #flying
+bsln <- which(flightfull$markers == "K") #Baseline at beginning
+rest <- which(flightfull$markers == "R") #rest
+```
+
+```{r}
+#saves the first row number of each section
+seal1 <- seal[1]
+fly1 <- fly[1] #flying
+bsln1 <- bsln[1] #Baseline at beginning
+rest1 <- rest[1] #rest
+```
+
+
+LAG CORRECT
+```{r}
+#Plot lag correct 
+plot(flightfull$Seconds[(seal1-20):(seal1+20)], flightfull$Carbon_Dioxide[(seal1-20):(seal1+20)])
+abline(v=seal1)
+```
+
+```{r}
+#This creates a new column with "shifted" or lag-corrected readings to match the time point
+lagpres <- 10
+lagflow <- 10
+#lagwvp <- 10
+lago2 <- 10
+lagco2 <- 10
+
+flightfull$co2nolag <- c(flightfull$Carbon_Dioxide[(1+lagco2):length(flightfull$Carbon_Dioxide)], rep(NA, lagco2))
+  #flightfull$wvpnolag <- c(flightfull$Water_Vapor[(1+lagwvp):length(flightfull$Water_Vapor)], rep(NA, lagwvp))
+  #We do not have water vapor in our CSV
+flightfull$o2nolag <- c(flightfull$Oxygen[(1+lago2):length(flightfull$Oxygen)], rep(NA, lago2))
+flightfull$flownolag <- c(flightfull$Flow_Rate[(1+lago2):length(flightfull$Flow_Rate)], rep(NA, lagflow))
+flightfull$presnolag <- c(flightfull$Barometric_Pressure[(1+lagpres):length(flightfull$Barometric_Pressure)], rep(NA, lagpres))
+```
+
+```{r}
+#plot full data lag corrected
+  #plot(flightfull$Seconds, flightfull$wvpnolag, type="l", col="blue")
+  #par(new=T)
+plot(flightfull$Seconds, flightfull$co2nolag, type="l", col="darkorange", axes=T, ann=F)
+par(new=T)
+plot(flightfull$Seconds, flightfull$o2nolag, type="l", col="green", axes=T, ann=F)
+par(new=T)
+plot(flightfull$Seconds, flightfull$flownolag, type="l", axes=T, ann=F)
+abline(v=fly1-10)
+
+plot(flightfull$Seconds, flightfull$co2nolag, type="l", col="darkorange", axes=T, ann=F)
+```
+
+```{r}
+## Drift correct and zero CO2 ----
+flightfull$co2_wvpc <- flightfull$co2nolag
+allVarBase <- data.frame(startTime=integer(0), varValBase=numeric(0))
+
+for(x in bsln1:(seal1-5)){ 
+  varNowBase <- var(flightfull$co2_wvpc[x:(x+30)], na.rm = T)
+  newRowBase <- c(x, varNowBase)
+  allVarBase <- rbind(allVarBase, newRowBase)  
+}
+
+names(allVarBase)=c("startTime", "varValBase")
+#View(allVar)
+#now to find minumum variance point using the above time frame in the for loop (2 minutes) 
+minVarBase <- min(allVarBase$varValBase)
+
+#Get the estimates 
+begin.base <- allVarBase$startTime[which(allVarBase$varValBase==min(allVarBase$varValBase))]
+duration.base <- 30
+lowVar.baseline <- begin.base:(begin.base+duration.base)
+prelowvar <- mean(flightfull$co2_wvpc[lowVar.baseline], na.rm=T)
+
+# drift correction
+shiftedco2 <- flightfull$co2_wvpc - prelowvar
+# subtracting out pre-baseline ("zeroing") 
+
+flightfull$co2pct <- shiftedco2 
+```
+
+```{r}
+plot(flightfull$Seconds, flightfull$co2pct, type="l")
+abline(v=fly1)
+plot(flightfull$Seconds[fly], flightfull$co2pct[fly])
+abline(v=fly1)
+```
+
+```{r}
+## Add VCO2 to data frame and save complete corrected trace to file ----
+flightfull$VCO2  <- flightfull$co2pct*flightfull$Flow_Rate*60 # mL CO2/hr
+
+plot(flightfull$Seconds[fly], flightfull$VCO2[fly], main=c(filename, "VCO2"), type="l", xlab = "Seconds flight", ylab = "VCO2 flight")
+```

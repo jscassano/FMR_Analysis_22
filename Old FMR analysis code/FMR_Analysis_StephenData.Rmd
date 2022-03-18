@@ -1,0 +1,206 @@
+---
+title: "FMR_Analysis"
+author: "Julian Cassano"
+date: "3/31/2021"
+output: pdf_document
+---
+
+```{r}
+library(tidyverse)
+library(car)
+library(MASS)
+library(ggpubr)
+```
+
+Load and clean FMR output
+```{r}
+#Read in Stephens Data set
+in.data<-read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/FMR Analysis/SMDN_MR_Data.CSV")
+  head(in.data)
+  str(in.data)
+ 
+#Average weight of the bees
+mean(in.data$Birthweight)
+#Make new tibble with FMR in Watts and ordered from largest to smallest
+FMR.in<-read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/FMR Analysis/SMDN_MR_Data.CSV")%>%
+  dplyr::select("FMR", "Mass_fMR")%>%
+  drop_na()
+
+FMR.in<-FMR.in%>%
+  mutate(FMR_Watts_perG = (FMR/1000),
+         FMR_Watts = (FMR_Watts_perG*Mass_fMR))
+View(FMR.in)
+
+#Calculating averages for high and low bees using quantiles
+#Summary Statistics
+summary(FMR.in$FMR_Watts)
+quantile(FMR.in$FMR_Watts) 
+
+#Pull rows below 1st quantile and above 3rd
+  #slow
+FMR.slow <- FMR.in %>%
+  filter(FMR_Watts < 0.03433)
+FMR.slow$Phenotype <- c("slow")
+  #fast
+FMR.fast <- FMR.in %>%
+  filter(FMR_Watts > 0.05178)
+FMR.fast$Phenotype <- c("fast")
+  #Combine the two
+FMR.all <- bind_rows(FMR.slow, FMR.fast)
+FMR.all
+```
+
+FMR Stats and graph
+```{r}
+#SE
+summarySE.Flower <- function(data=FMR.all, measurevar = FMR_Watts, groupvars=NULL, na.rm=TRUE,
+                      conf.interval=.95, .drop=TRUE) {
+  library(plyr)
+  # New version of length which can handle NA's: if na.rm==T, don't count them
+  length2 <- function (x, na.rm=FALSE) {
+    if (na.rm) sum(!is.na(x))
+    else       length(x)
+  }
+  # This does the summary. For each group's data frame, return a vector with
+  # N, mean, and sd
+  datac <- ddply(FMR.all, groupvars, .drop=.drop,
+                 .fun = function(xx, col) {
+                   c(N    = length2(xx[[col]], na.rm=na.rm),
+                     mean = mean   (xx[[col]], na.rm=na.rm),
+                     sd   = sd     (xx[[col]], na.rm=na.rm)
+                   )
+                 },
+                 measurevar
+  )
+  # Rename the "mean" column    
+  datac <- rename(datac, c("mean" = measurevar))
+  datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+  # Confidence interval multiplier for standard error
+  # Calculate t-statistic for confidence interval: 
+  # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+  ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+  datac$ci <- datac$se * ciMult
+  return(datac)
+}
+
+FMR.sum.SE <- summarySE.Flower(FMR.all, measurevar="FMR_Watts",
+                  groupvars="Phenotype")
+
+#ANOVA
+lm.FMR <-lm(FMR_Watts ~ Phenotype, data = FMR.all)
+summary(lm.FMR)
+Anova(lm.FMR, type = 2)
+
+#Barplot
+pd <- position_dodge(0.9) # move them 0.05 to the left and right
+bar.FMR <- ggplot(FMR.sum.SE, aes(x=Phenotype, y=FMR_Watts, fill = Phenotype))+
+    geom_bar(stat="identity", position=position_dodge()) +
+    geom_errorbar(aes(ymin=FMR_Watts-se, ymax=FMR_Watts+se), position = pd, width=0.1, colour = "black", size=1) +
+  scale_fill_manual(values=c("firebrick", "steelblue3"))+
+  theme_pubr() +
+  labs(y ="FMR (Watts)")+
+  theme(legend.title = element_blank())
+bar.FMR
+```
+
+Load and clean RMR output
+```{r}
+#Make new tibble with FMR in Watts and ordered from largest to smallest
+RMR.in<-read_csv("/Users/jcassano/Desktop/Masters Thesis/Summer 2020 Thesis Project/FMR Analysis/SMDN_MR_Data.CSV")%>%
+  dplyr::select("RMR", "Mass_sMR")%>%
+  drop_na()%>%
+  mutate(RMR_Watts_perG = (RMR/1000),
+         RMR_Watts = (RMR_Watts_perG*Mass_sMR))
+
+RMR.in <- RMR.in%>%
+  mutate(RMR_Ordered = sort(RMR.in$RMR_Watts, decreasing = F))
+View(RMR.in)
+
+#Summary Statistics
+summary(RMR.in$RMR_Watts)
+quantile(RMR.in$RMR_Watts) 
+boxplot(RMR.in$RMR_Watts)
+
+hist(RMR.in$RMR_Watts, breaks = 25)
+
+(0.0062366 - 0.0023008)*1.5
+
+#Pull rows below 1st quantile and above 3rd
+  #slow
+RMR.slow <- RMR.in %>%
+  filter(RMR_Watts < 0.0023007711)
+RMR.slow$Phenotype <- c("slow")
+  #fast
+RMR.fast <- RMR.in %>%
+  filter(RMR_Watts > 0.0062365592)
+RMR.fast$Phenotype <- c("fast")
+  #Combine the two
+RMR.all <- bind_rows(RMR.slow, RMR.fast)
+View(RMR.all)
+```
+
+RMR Stats and graphs
+```{r}
+#SE
+summarySE.Flower <- function(data=RMR.all, measurevar = RMR_Watts, groupvars=NULL, na.rm=TRUE,
+                      conf.interval=.95, .drop=TRUE) {
+  library(plyr)
+  # New version of length which can handle NA's: if na.rm==T, don't count them
+  length2 <- function (x, na.rm=FALSE) {
+    if (na.rm) sum(!is.na(x))
+    else       length(x)
+  }
+  # This does the summary. For each group's data frame, return a vector with
+  # N, mean, and sd
+  datac <- ddply(RMR.all, groupvars, .drop=.drop,
+                 .fun = function(xx, col) {
+                   c(N    = length2(xx[[col]], na.rm=na.rm),
+                     mean = mean   (xx[[col]], na.rm=na.rm),
+                     sd   = sd     (xx[[col]], na.rm=na.rm)
+                   )
+                 },
+                 measurevar
+  )
+  # Rename the "mean" column    
+  datac <- rename(datac, c("mean" = measurevar))
+  datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+  # Confidence interval multiplier for standard error
+  # Calculate t-statistic for confidence interval: 
+  # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+  ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+  datac$ci <- datac$se * ciMult
+  return(datac)
+}
+
+RMR.sum.SE <- summarySE.Flower(RMR.all, measurevar="RMR_Watts",
+                  groupvars="Phenotype")
+
+#ANOVA
+lm.RMR <-lm(RMR_Watts ~ Phenotype, data = RMR.all)
+summary(lm.RMR)
+Anova(lm.RMR, type = 2)
+
+sum.RMR.all <- group_by(RMR.all,Phenotype)%>%
+  dplyr::summarize(
+    n = dplyr::n(),
+    mean = mean(RMR_Watts), #Watts
+    sd = sd(RMR_Watts),
+    se = sd(RMR_Watts) / sqrt((length(RMR_Watts))))
+
+pd <- position_dodge(0.9) # move them 0.05 to the left and right
+bar.RMR <- ggplot(sum.RMR.all, aes(x=Phenotype, y=mean, fill = Phenotype))+
+    geom_bar(stat="identity", position=position_dodge()) +
+    geom_errorbar(aes(ymin=mean-se, ymax=mean+se), position = pd, width=0.1, colour = "black", size=1) +
+  scale_fill_manual(values=c("firebrick", "steelblue3"))+
+  theme_pubr() +
+  labs(y ="RMR (Watts)")+
+  theme(legend.title = element_blank())
+bar.RMR
+```
+
+Combine both FMR and RMR bargraphs
+```{r}
+#Combine FMR and RMR
+combined.MR.plots <- ggarrange(bar.FMR, bar.RMR, labels = c("A","B"))
+ggsave(plot = combined.MR.plots, filename = "/Users/jcassano/Desktop/MR.bars.png", width = 5, height = 5, dpi = 300)
+```
